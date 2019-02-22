@@ -279,24 +279,24 @@ class Decoder(srd.Decoder):
         """Actions before the beginning of the decoding."""
         self.out_ann = self.register(srd.OUTPUT_ANN)
 
-    def put_data(self, bit_start, bit_stop, data):
+    def putd(self, ss, es, data):
         """Span data output across bit range.
 
         - Output is an annotation block from the start sample of the first
           bit to the end sample of the last bit.
         """
-        self.put(self.bits[bit_start][1], self.bits[bit_stop][2],
-                 self.out_ann, data)
+        self.put(self.bits[ss][1], self.bits[es][2], self.out_ann, data)
 
-    def put_bit_reserve(self, bit_reserved):
-        """Span output under reserved bit.
+    def putr(self, start, end=None):
+        """Span reserved bit annotation across bit range bit by bit.
 
-        - Output is an annotation block from the start to the end sample
-          of a reserved bit.
+        - Parameters should be considered as a range, so that the end bit
+          number is not annotated.
         """
         annots = hlp.compose_annot(bits[AnnBits.RESERVED])
-        self.put(self.bits[bit_reserved][1], self.bits[bit_reserved][2],
-                 self.out_ann, [AnnBits.RESERVED, annots])
+        for bit in range(start, end or (start + 1)):
+            self.put(self.bits[bit][1], self.bits[bit][2],
+                     self.out_ann, [AnnBits.RESERVED, annots])
 
     def handle_command(self, data):
         """Detect command and call its handler."""
@@ -309,7 +309,7 @@ class Decoder(srd.Decoder):
                 # Bits row - Command bits
                 ann = cmd_annot[cmd]
                 annots = hlp.compose_annot(bits[ann])
-                self.put_data(CommandBits.MIN, CommandBits.MAX, [ann, annots])
+                self.putd(CommandBits.MIN, CommandBits.MAX, [ann, annots])
                 # Handler
                 fn = getattr(self, "handle_command_{}".format(attr.lower()))
                 fn(data & ~mask)
@@ -317,35 +317,32 @@ class Decoder(srd.Decoder):
     def handle_command_data(self, data):
         """Process data command."""
         # Bits row - Reserved
-        for i in range(DataBits.MODE + 1, CommandBits.MIN):
-            self.put_bit_reserve(i)
+        self.putr(DataBits.MODE + 1, CommandBits.MIN)
         # Bits row - Mode bit
         ann = (AnnBits.NORMAL, AnnBits.TEST)[data >> DataBits.MODE & 1]
         annots = hlp.compose_annot(bits[ann])
-        self.put_data(DataBits.MODE, DataBits.MODE, [ann, annots])
+        self.putd(DataBits.MODE, DataBits.MODE, [ann, annots])
         # Bits row - Addressing bit
         ann = (AnnBits.AUTO, AnnBits.FIXED)[data >> DataBits.ADDR & 1]
         self.auto = (ann == AnnBits.AUTO)
         annots = hlp.compose_annot(bits[ann])
-        self.put_data(DataBits.ADDR, DataBits.ADDR, [ann, annots])
+        self.putd(DataBits.ADDR, DataBits.ADDR, [ann, annots])
         # Bits row - Read/Write bit
         self.write = (data >> DataBits.RW & 1 == 0)
         ann = (AnnBits.READ, AnnBits.WRITE)[self.write]
         annots = hlp.compose_annot(bits[ann])
-        self.put_data(DataBits.RW, DataBits.RW, [ann, annots])
+        self.putd(DataBits.RW, DataBits.RW, [ann, annots])
         # Bits row - Prohibited bit
-        for i in range(DataBits.RW):
-            self.put_bit_reserve(i)
+        self.putr(0, DataBits.RW)
 
     def handle_command_display(self, data):
         """Process display command."""
         # Bits row - Reserved
-        for i in range(DisplayBits.SWITCH + 1, CommandBits.MIN):
-            self.put_bit_reserve(i)
+        self.putr(DisplayBits.SWITCH + 1, CommandBits.MIN)
         # Bits row - Switch bit
         ann = (AnnBits.OFF, AnnBits.ON)[data >> DisplayBits.SWITCH & 1]
         annots = hlp.compose_annot(bits[ann])
-        self.put_data(DisplayBits.SWITCH, DisplayBits.SWITCH, [ann, annots])
+        self.putd(DisplayBits.SWITCH, DisplayBits.SWITCH, [ann, annots])
         # Bits row - PWM bits
         mask = 0
         for i in range(DisplayBits.MIN, DisplayBits.MAX + 1):
@@ -353,13 +350,12 @@ class Decoder(srd.Decoder):
         pwm = contrasts[data & mask]
         ann = AnnBits.CONTRAST
         annots = hlp.compose_annot(bits[ann], ann_value=pwm)
-        self.put_data(DisplayBits.MIN, DisplayBits.MAX, [ann, annots])
+        self.putd(DisplayBits.MIN, DisplayBits.MAX, [ann, annots])
 
     def handle_command_address(self, data):
         """Process address command."""
         # Bits row - Reserved
-        for i in range(AddressBits.MAX + 1, CommandBits.MIN):
-            self.put_bit_reserve(i)
+        self.putr(AddressBits.MAX + 1, CommandBits.MIN)
         # Bits row - Digit bits
         mask = 0
         for i in range(AddressBits.MIN, AddressBits.MAX + 1):
@@ -368,7 +364,7 @@ class Decoder(srd.Decoder):
         self.position = adr    # Start address
         ann = AnnBits.POSITION
         annots = hlp.compose_annot(bits[ann], ann_value=adr)
-        self.put_data(AddressBits.MIN, AddressBits.MAX, [ann, annots])
+        self.putd(AddressBits.MIN, AddressBits.MAX, [ann, annots])
 
     def handle_data(self, data):
         """Detect display unit and call its handler."""
@@ -388,7 +384,7 @@ class Decoder(srd.Decoder):
         for i in range(8):
             if data >> i & 1:
                 annots = [segments[i]]
-                self.put_data(i, i, [AnnBits.DIGIT, annots])
+                self.putd(i, i, [AnnBits.DIGIT, annots])
         # Register digit
         mask = data & ~(1 << 7)
         char = Params.UNKNOWN_CHAR
@@ -406,7 +402,7 @@ class Decoder(srd.Decoder):
         for i in range(8):
             if data >> i & 1:
                 annots = hlp.compose_annot(bits[led_annot[i]])
-                self.put_data(i, i, [AnnBits.LED, annots])
+                self.putd(i, i, [AnnBits.LED, annots])
                 led = leds[i]
         # Register LED
         self.leds.append(led)
@@ -420,25 +416,25 @@ class Decoder(srd.Decoder):
                 seg = "KS{}".format(2 * self.position + (bit // 4) + 1)
                 keytag = "{}-{}".format(key, seg)
                 annots = [keytag]
-                self.put_data(bit, bit, [AnnBits.KEY, annots])
+                self.putd(bit, bit, [AnnBits.KEY, annots])
                 self.keys.append(keytag)
 
     def handle_info(self):
         """Process info rows."""
         # Display row
-        if len(self.display) > 0:
+        if self.display:
             ann = AnnInfo.DISPLAY
             val = "{}".format("".join(self.display))
             annots = hlp.compose_annot(info[ann], ann_value=val)
             self.put(self.ssb, self.es, self.out_ann, [ann, annots])
         # LEDchain row
-        if len(self.leds) > 0:
+        if self.leds:
             ann = AnnInfo.LEDS
             val = "{}".format("".join(self.leds))
             annots = hlp.compose_annot(info[ann], ann_value=val)
             self.put(self.ssb, self.es, self.out_ann, [ann, annots])
         # Keyboard row
-        if len(self.keys) > 0:
+        if self.keys:
             ann = AnnInfo.KEYS
             val = "{}".format(",".join(
                 map(lambda key: switches[key], self.keys)
